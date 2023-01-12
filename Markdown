@@ -1,0 +1,312 @@
+#' ---
+#' title: 'Linear regression with $\texttt{R}$'
+#' 
+#' author:
+#' - Baglini Lorenzo (mat. 748741)
+#' - Borriello Edoardo (mat. 750051) 
+#' - Cibelli Michele (mat. 750931) 
+#' - Flores Giacomo (mat. 753821) 
+#' - Meloncelli Lorenzo (mat. 756931)
+#' - Piccaro Filippo (mat. 749521)
+#' - Schettini Valerio (mat. 745491)
+#' 
+#' output: 
+#'   html_document: 
+#'     code_folding: hide
+#' ---
+
+#' <style type="text/css">
+#'  body{
+#'    font-size: 16pt;
+#'  }
+#' </style>
+
+#+ setup, echo = F
+knitr::opts_chunk$set(cache = F, message = F, warning = F, fig.width = 9, fig.height = 6, echo = T)
+
+#' # Assignment
+#' 
+#'  "Hi! 
+#'  
+#'  Your project involves charges and chrun prediction. 
+#'  
+#'  You should proceed as follows: 
+#'  
+#'  First, read the attached paper and provide a 1 page summary about it. 
+#'  
+#'  Then, import in R the attached dataset. Describe the relevant variables, then estimate a linear regression model to predict total charges. Do not use variable churn as a predictor. Interpret the results and evaluate the predictive ability of the model. 
+#'  
+#'  You should submit
+#'  
+#'  1) A 2-3 pages report (not counting space for tables and figures) with your analyses and comments. In the report please also report the assignment as I gave it to you by copying and pasting this email (clearly, also does space does not count towards the 3 page limit) 
+#'  
+#'  2) A replication package made of the data and a text file with your R code, which I can simply copy and paste to reproduce your entire analysis.
+#'   
+#'  Have a nice day!
+#'  
+#'  Alessio"
+#'  
+
+#+ packages, echo = F
+library(tidyverse)
+library(ggcorrplot)
+library(fastDummies)
+library(readr)
+library(ggplot2)
+library(MASS)
+library(olsrr)
+library(car)
+library(corrplot)
+library(caret)
+
+#' # Data description 
+#' The dataset $\texttt{WA_Telco_Customer_Churn}$ contains relevant customers data that can be used to develop focused customer retention programs.
+#' 
+
+WA_Telco_Customer_Churn <- read_delim("WA_Telco_Customer_Churn.csv",
+                                      delim = ";", escape_double = FALSE, trim_ws = TRUE)
+WA_Telco_Customer_Churn %>% glimpse
+
+#' The data set provided to us includes information about:
+#' 
+#' - Customers who left within the last month (the column is called Churn);
+#' 
+#' - Services that each customer has signed up for (phone, multiple lines, internet, online security, online backup, device protection, tech support, and streaming TV and movies);
+#' 
+#' - Customer account information (how long they’ve been a customer, contract, payment method, paperless billing, monthly charges, and total charges);
+#' 
+#' - Demographic info about customers – gender, age range, and if they have partners and dependents. 
+#' 
+#'  A glance of how the data look like is reported above.
+#' 
+#' 
+
+
+#' # Preliminary Analysis 
+#' The first thing we did was check for missing data: 11 NA values were founded. Since they represented a very small percentage of our data, we decided to remove the corresponding observations from the data set.
+WA_Telco_Customer_Churn <- na.omit(WA_Telco_Customer_Churn)
+#' We also removed the $\texttt{churn}$ variable, as it was specified in the assignment, and the $\texttt{customer_ID}$ variable, as this kind of information had no role in our regression study.
+data <- WA_Telco_Customer_Churn[,-1]
+data <- data[,-20]
+#' Then, for each categorical variable, we created dummy variables (that can only assume the values 0 and 1, where 0 indicates the absence of the property, and 1 indicates the presence of the same) so that we could easily manipulate those predictors that would have been highly correlated.
+new_data <- fastDummies::dummy_cols(data)
+new_data <- new_data[,-1:-18]
+new_data$tenure <- data$tenure
+new_data_nocol <- new_data
+view(new_data_nocol)
+#'
+#'
+#'
+
+#' # Analysis of the correlation between predictors
+cor <- as.matrix(round(cor(new_data_nocol[,-1], method = "spearman"), 3))
+ggcorrplot(cor, type = "lower", insig = "blank")
+
+#' We plotted the correlation matrix of our explanatory variables to have a graphical representation of their relationships. The method used was the "Spearman", that is often used to evaluate relationships involving ordinal variables.
+#'
+#'
+z <- c(-3,-5,-7,-9,-12,-15,-18,-21,-24,-27,-30,-33,-36,-38,-42)
+new_data_nocol <- new_data_nocol[,z]
+n <- c(-7,-8,-11,-13,-15,-17,-19,-20)
+new_data_nocol <- new_data_nocol[,n]
+#' To name a few, those categorical variables with value "$\texttt{No_internet_service}$" are perfectely correlated. Also, if there is no phone service, the variable $\texttt{multiple_line}$ is perfectly correlated with $\texttt{PhoneService_No}$.
+#' As shown by the matrix below, after removing perfectly correlated variables only mild correlation is left between the predictors. 
+
+cor <- as.matrix(round(cor(new_data_nocol[,-1], method = "spearman"),3))
+ggcorrplot(cor, type = "lower", insig = "blank")
+
+#' Once the correlation problems have been avoided, we proceeded to the analysis of our target variable.
+#' 
+
+#' # Analysis of the target variable distribution
+#' One of the assumptions for the linear regression model is that the response variable Y is approximately normally distributed. The normal distribution peaks in the middle and is symmetrical about the mean.
+#' 
+#' Plotting a histogram of the variable of interest will give an indication of the shape of the distribution.
+target <- as.vector(new_data$TotalCharges)
+hist(target, breaks = 50)
+#' As the histogram shows, the distribution is far from Gaussian. So, in order to deal with this kind of skewness (right), we decided to apply a Box-Cox transformation. One problem we faced was the selection of the best lambda to use. Since the purpose was to have a good 
+#' approximation of the Gaussian distribution for our target variable, we wrote a short for loop with the goal of finding the lambda that would maximize the goodness of fit of the transformed variable distribution to the Normal
+#' one. The criterion we chose was to find the lambda corresponding to the highest (and statistically significant) value of the test-statistic of Shapiro's normality test. 
+#' 
+#' Using this procedure, we found our best lambda value to be 0,3. 
+
+set.seed(123)
+y_random <- sample(x = target, size = 5000)
+for (i in seq(0,0.5,0.1)) {
+  if (i != 0) {
+    y_test <- (y_random^(i)-1)/i
+  }
+  else {
+    y_test <- log(y_random)
+  }
+
+}
+BoxCox <- function(x,lambda) {(x^(lambda)-1)/lambda}
+new_data_nocol$TotalCharges <- BoxCox(new_data_nocol$TotalCharges,0.3)
+
+# Histogram
+p_hist <- new_data_nocol %>% 
+  ggplot(aes(x = TotalCharges, y = ..density.., color = I("gray"), fill = I("grey20"))) + geom_histogram(bins = 50) +
+  theme_bw() +
+  theme(text = element_text(size = 10), axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank(), axis.title.y = element_blank())
+
+# Boxplot
+p_box <- new_data_nocol %>% 
+  ggplot(aes(x = TotalCharges, color = I("grey20"), fill = I("gray"))) + geom_boxplot() +
+  theme_bw() +
+  theme(text = element_text(size = 10), axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank())
+
+# Put together for a nice visualization
+cowplot::plot_grid(p_box, p_hist, nrow = 2, ncol = 1)
+
+#' 
+#' As both the histogram and the box plot above show, the outcome is not exactly a Gaussian distribution, but nevertheless is a better approximation than the one we started with.
+#' 
+
+
+#' # Data Splitting
+#' Since the final goal of our analysis was to produce a prediction model for the total charges that the operator was applying to different customers, we proceeded to split the data in train and test. We decided to use 75% percent of out data for training and the remaining part to evaluate the performance of the model.
+
+smp_size <- floor(0.75 * nrow(new_data_nocol))
+
+set.seed(123)
+train_ind <- sample(seq_len(nrow(new_data_nocol)), size = smp_size)
+
+train <- new_data_nocol[train_ind, ]
+test <- new_data_nocol[-train_ind, ]
+
+#'
+#'
+
+
+#' # Training
+
+#' We first wanted to look at the results of a simple linear regression model using the only continuous variable we had.
+linear_model = lm(train$TotalCharges ~ tenure, train) 
+summary(linear_model)
+#' We found the model to be internally valid and actually not bad at all considering its simplicity.
+#'  
+#' In spite of the goodness of the univariate model, we wanted to include the other variables to look at the results. 
+#' For computational reasons, best subset selection (that considers all 2^n possible models containing subset of the n predictors) cannot be applied with very large n. 
+#' Best subset selection may also suffer from statistical problems when n is large. 
+#' The larger the search space, the higher the chance of finding models that look good on the training data, even though they might not have any predictive power on future data. 
+#' Thus an enormous search space can lead to overfitting and high variance of the coefficient estimates.
+#' 
+#' For both of these reasons, in order to compute our final multivariate model, we used a step-wise method, that explore a far more restricted set of models. We performed forward selection using the AIC to get to our best final model.
+#' 
+
+
+#+ AIC
+linear_model2 = lm(train$TotalCharges ~., data = train)
+linear_model_AIC = stepAIC(linear_model2, direction = "both", trace = F)
+linear_model_AIC$anova # display the procedure
+summary(linear_model_AIC)
+#' 
+#' In the multiple regression setting we need to ask whether all of the regression coefficients are zero. 
+#' To answer this question we use a hypotesis test performed by computing the F-statistic. 
+#' When there is no relationship between the response variable and the predictors one would expect the F-statistic to take on a value close to 1. In our example, this is not case.
+#' 
+#' Now we can look at the individual p-values. 
+#' A small p-value indicates that it is unlikely to observe such a substantial association between the predictor and the response due to chance, in the absense of any real association between the predictor and the response. 
+#' Hence, if we see a small p-value, than we can infer that there is an association between the predictor and the response. We reject the null hypothesis - that is, we declare a relationship to exist between Xi and Y - if the p-value is small enough.
+#' 
+#' Again, the resulting model seemed to be internally valid (being all our predictors statistically significant), even though we waited for the residual analysis to be sure. 
+#' 
+#' Also, the adjusted R-squared we obtained was definitely higher than the one in the single linear regression model. With the purpose of diversifying our portfolio of performance measures, we considered also the Residual Standard Error. The RSE was equal to 2.859, meaning that the observed sales values deviate from the predicted values by approximately 2.859 units in average. Because of these remarkable increases in performance, we concluded that selecting this one as our final model was no offence to Occam's razor.
+#' 
+#' To further evaluate if there was multicollinearity among the predictor variables, we computed the Variance Inflation Factor (VIF). 
+#' Mathematically, the VIF for a regression model variable is equal to the ratio of the overall model variance to the variance of a model that includes only that single independent variable. This ratio is calculated for each independent variable. 
+#' A high VIF indicates that the associated independent variable is highly collinear with the other variables in the model.
+vif(linear_model_AIC) 
+#' As a rule of thumb, a VIF value that exceed 10 indicates a problematic amount of collinearity. As the results above show, this was not the case.
+#' 
+#' 
+
+
+#' # Non-linear relationships
+#' At this point we decided to continue our model selection process by looking for nonlinear relationships between predictors and our target variable. Having only one continuous variable, this little adjustment was quite inexpensive.
+non_linear_model <- lm(train$TotalCharges ~ train$tenure)
+plot(train$tenure, train$TotalCharges, pch = 16,
+     xlab = "tenure",
+     ylab = "TotalCharges")
+abline(non_linear_model, lwd = 7, lty = 2, col = 2)
+
+# The red line represents the linear regression fit. 
+# There is a pronounced relationship between $\texttt{TotalCharges}$ and $\texttt{tenure}$, but it seems clear that 
+# this relationship is  non-linear: the data suggest a curved relationship. 
+
+# A simple approach for incorporating non-linear associations in a linear model is to
+# include transformed versions of the predictors in the model.
+#' 
+
+linear_model_AIC2 = update(linear_model_AIC, ~.+I(tenure^(1/2)))
+summary(linear_model_AIC2)
+linear_model_AIC3 = update(linear_model_AIC2, ~.-Partner_No)
+
+#' As can be seen by the performance metrics above, the model performance was once again improved.
+#' 
+
+
+#' # Residual Analysis
+#' Since in the MLR there are a lot of predictors, we plotted the residuals versus
+#' the predicted (or fitted) values. Ideally, the residual plot will show no
+#' discernible pattern. In our case we have some heteroskedasticity in our model.
+#' 
+#' 
+
+
+
+
+ols_plot_resid_fit(linear_model_AIC2) 
+#'
+#' The non-random pattern in the residuals indicates that the predictor variables 
+#' were not capturing some explanatory information that was instead present into the residuals. 
+#' 
+#' The graph could represent several ways in which the model is not explaining all that is possible.
+#' 
+#' Possibilities include:
+#' (1) a missing variable;
+#' (2) a missing higher-order term of a variable in the model to explain the presence of a curvature;
+#' (3) a missing interaction between terms already in the model;
+#' (4) the presence of correlation between errors and predictors.
+#' 
+#' While heteroscedasticity does not cause bias in the coefficient estimates, it does make them less precise. 
+#' Lower precision increases the likelihood that the coefficient estimates are further from the correct population value. 
+#' Also, heteroscedasticity tends to produce p-values that are smaller than they should be. This effect occurs because heteroscedasticity increases the variance of the coefficient estimates but the OLS procedure does not detect this increase. 
+#' Consequently, OLS calculates the t-values and F-values using an underestimated amount of variance. 
+#' 
+#' 
+#' 
+
+
+
+#' # Testing
+#' 
+#+ Make Predictions.
+predictions1 <- linear_model  %>% predict(test)
+predictions2 <- linear_model_AIC3 %>% predict(test)
+
+#' Finally, to asses our model performance, we computed the RMSE and the Adjusted R-squared for our simple and final models. As the results show, the performance on the test set is not far from the one in the train set, even though is slightly inferior. The doubts on a possible overfitting were therefore cleared up.
+#' 
+#' RMSE simple model 
+RMSE(predictions1, test$TotalCharges) 
+#' RMSE multiple model 
+RMSE(predictions2, test$TotalCharges) 
+#' Adjusted R-squared simple model
+Rsquared <- function (x, y) cor(x, y) ^ 2
+R_squared1 <- Rsquared(predictions1, test$TotalCharges)
+adjusted_R_squared1 <- 1 - (1-R_squared1)*(nrow(test)-1)/(nrow(test) - 1 - length(linear_model$coefficients))
+adjusted_R_squared1
+#' Adjusted R-squared multiple model
+R_squared2 <- Rsquared(predictions2, test$TotalCharges)
+adjusted_R_squared2 <- 1 - (1-R_squared2)*(nrow(test)-1)/(nrow(test) - 1 - length(linear_model_AIC3$coefficients))
+adjusted_R_squared2
+
+#' 
+#' # Conclusions
+#' 
+#' At the end of our analysis we found ourselves genuinely surprised by the effectiveness of our model and quite confident in its predictive performance. Even though the significance of our coefficients could have been compromised by the presence of heteroskedasticity, we think that the one present in our model is simply not enough to justify a complete loss of relevance. 
+#' To conclude, the results may change if the seed of the random sampling used in the splitting phase is changed. However, the model has still a great explanatory capacity concerning the actual value of our target variable.
+#' 
